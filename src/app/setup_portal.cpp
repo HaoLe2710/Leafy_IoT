@@ -1,9 +1,15 @@
 #include "app/setup_portal.h"
 
 #include <ESP.h>
+#include <WiFi.h>
 
+#include "app/qr_code_script.h"
 #include "utils/logger.h"
 #include "utils/time_utils.h"
+
+#ifndef LEAFY_DEVICE_MODEL
+#define LEAFY_DEVICE_MODEL "Leafy IoT Module V1"
+#endif
 
 namespace leafy {
 
@@ -32,6 +38,7 @@ void SetupPortal::start() {
 
   registerRoutes();
   _server.begin();
+  startCaptiveDns();
   _running = true;
   Logger::info("Setup portal started: " + portalUrl());
 }
@@ -41,6 +48,9 @@ void SetupPortal::loop() {
     return;
   }
 
+  if (_dnsStarted) {
+    _dnsServer.processNextRequest();
+  }
   _server.handleClient();
   if (_restartScheduled && millis() >= _restartAtMs) {
     Logger::warn("Restarting device after setup portal action");
@@ -67,6 +77,16 @@ String SetupPortal::portalUrl() const {
 
 void SetupPortal::registerRoutes() {
   _server.on("/", HTTP_GET, [this]() { handleHome(); });
+  _server.on("/device-info", HTTP_GET, [this]() { handleDeviceInfo(); });
+  _server.on("/qr-code.js", HTTP_GET, [this]() { handleQrScript(); });
+  _server.on("/generate_204", HTTP_GET, [this]() { handleCaptivePortalProbe(); });
+  _server.on("/gen_204", HTTP_GET, [this]() { handleCaptivePortalProbe(); });
+  _server.on("/hotspot-detect.html", HTTP_GET, [this]() { handleCaptivePortalProbe(); });
+  _server.on("/library/test/success.html", HTTP_GET, [this]() { handleCaptivePortalProbe(); });
+  _server.on("/connecttest.txt", HTTP_GET, [this]() { handleCaptivePortalProbe(); });
+  _server.on("/ncsi.txt", HTTP_GET, [this]() { handleCaptivePortalProbe(); });
+  _server.on("/fwlink", HTTP_GET, [this]() { handleCaptivePortalProbe(); });
+  _server.on("/canonical.html", HTTP_GET, [this]() { handleCaptivePortalProbe(); });
   _server.on("/wifi", HTTP_GET, [this]() { handleWifiForm(); });
   _server.on("/wifi", HTTP_POST, [this]() { handleWifiSave(); });
   _server.on("/diagnostics", HTTP_GET, [this]() { handleDiagnostics(); });
@@ -74,6 +94,27 @@ void SetupPortal::registerRoutes() {
   _server.on("/reset", HTTP_POST, [this]() { handleResetPost(); });
   _server.on("/api/status", HTTP_GET, [this]() { handleApiStatus(); });
   _server.onNotFound([this]() { handleNotFound(); });
+}
+
+void SetupPortal::startCaptiveDns() {
+  if (_dnsStarted) {
+    return;
+  }
+
+  _apIp = WiFi.softAPIP();
+  if (_apIp == IPAddress(0, 0, 0, 0)) {
+    Logger::warn("Captive portal DNS not started because setup AP IP is unavailable");
+    return;
+  }
+
+  _dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  if (!_dnsServer.start(DNS_PORT, "*", _apIp)) {
+    Logger::warn("Captive portal DNS failed to start on " + _apIp.toString() + ":" + String(DNS_PORT));
+    return;
+  }
+
+  _dnsStarted = true;
+  Logger::info("Captive portal DNS started on " + _apIp.toString() + ":" + String(DNS_PORT));
 }
 
 void SetupPortal::scheduleRestart(uint32_t delayMs) {
@@ -136,9 +177,33 @@ String SetupPortal::wifiStateText() const {
   return "UNKNOWN";
 }
 
+String SetupPortal::setupApSsid() const {
+  if (_wifiManager != nullptr && _wifiManager->setupApSsid().length() > 0) {
+    return _wifiManager->setupApSsid();
+  }
+  return _apSsid;
+}
+
+String SetupPortal::buildDeviceInfoJson() const {
+  String json;
+  json.reserve(360);
+  json += "{";
+  json += "\"type\":\"LEAFY_IOT_DEVICE\",";
+  json += "\"version\":1,";
+  json += "\"deviceUid\":\"" + jsonEscape(_config != nullptr ? _config->identity.deviceUid : "") + "\",";
+  json += "\"deviceCode\":\"" + jsonEscape(_config != nullptr ? _config->identity.deviceCode : "") + "\",";
+  json += "\"deviceType\":\"" + jsonEscape(_config != nullptr ? _config->identity.deviceType : "") + "\",";
+  json += "\"model\":\"" + jsonEscape(LEAFY_DEVICE_MODEL) + "\",";
+  json += "\"firmwareVersion\":\"" + jsonEscape(_config != nullptr ? _config->identity.firmwareVersion : "") + "\",";
+  json += "\"setupApSsid\":\"" + jsonEscape(setupApSsid()) + "\",";
+  json += "\"setupPortalUrl\":\"" + jsonEscape(portalUrl()) + "\"";
+  json += "}";
+  return json;
+}
+
 String SetupPortal::htmlPage(const String& title, const String& body) const {
   String html;
-  html.reserve(3500);
+  html.reserve(5000);
   html += "<!doctype html><html><head><meta charset=\"utf-8\">";
   html += "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">";
   html += "<title>" + htmlEscape(title) + "</title>";
@@ -146,9 +211,12 @@ String SetupPortal::htmlPage(const String& title, const String& body) const {
   html += "body{font-family:Arial,sans-serif;margin:24px;max-width:840px;line-height:1.45;color:#1f2933}";
   html += "a{color:#0b5cab}nav a{margin-right:14px}table{border-collapse:collapse;width:100%;margin:12px 0}";
   html += "td,th{border:1px solid #d6dde5;padding:7px;text-align:left}th{background:#f3f6f9}";
-  html += "input{box-sizing:border-box;width:100%;padding:9px;margin:4px 0 12px;border:1px solid #bcc7d1}";
+  html += "input,textarea{box-sizing:border-box;width:100%;padding:9px;margin:4px 0 12px;border:1px solid #bcc7d1}";
   html += "button{padding:9px 14px;border:1px solid #1f6feb;background:#1f6feb;color:white}";
   html += ".warn{color:#9a3412}.ok{color:#166534}.muted{color:#667085}.danger{background:#b42318;border-color:#b42318}";
+  html += ".card{border:1px solid #d6dde5;background:#f8fafc;padding:14px;margin:16px 0}.qr-wrap{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}";
+  html += ".qr-box{background:white;border:1px solid #d6dde5;padding:12px;min-width:220px;min-height:220px}.qr-box svg{width:220px;height:220px;display:block}";
+  html += ".payload{font-family:monospace;min-height:110px;resize:vertical}.small{font-size:12px}";
   html += "</style></head><body>";
   html += "<h1>" + htmlEscape(title) + "</h1>";
   html += nav();
@@ -217,7 +285,33 @@ String SetupPortal::sensorValue(double value, bool valid, uint8_t decimals, cons
 
 void SetupPortal::handleHome() {
   String body;
+  String deviceInfoJson = buildDeviceInfoJson();
   body += "<p class=\"muted\">This local portal handles device-side setup and diagnostics only. Backend provision, claim code generation, and claim/bind remain in the Leafy backend/web flow.</p>";
+  body += "<div class=\"card\">";
+  body += "<h2>Connect this device to Leafy</h2>";
+  body += "<p>Scan this QR in the Leafy app or web onboarding page.</p>";
+  body += "<div class=\"qr-wrap\">";
+  body += "<div id=\"device-qr\" class=\"qr-box\"><p class=\"muted small\">Rendering QR...</p></div>";
+  body += "<div style=\"flex:1;min-width:260px\">";
+  body += "<table><tr><th>Field</th><th>Value</th></tr>";
+  body += "<tr><td>Device UID</td><td>" + htmlEscape(_config != nullptr ? _config->identity.deviceUid : "") + "</td></tr>";
+  body += "<tr><td>Device Code</td><td>" + htmlEscape(_config != nullptr ? _config->identity.deviceCode : "") + "</td></tr>";
+  body += "<tr><td>Device Type</td><td>" + htmlEscape(_config != nullptr ? _config->identity.deviceType : "") + "</td></tr>";
+  body += "<tr><td>Firmware</td><td>" + htmlEscape(_config != nullptr ? _config->identity.firmwareVersion : "") + "</td></tr>";
+  body += "<tr><td>Setup Wi-Fi</td><td>" + htmlEscape(setupApSsid()) + "</td></tr>";
+  body += "<tr><td>Portal URL</td><td>" + htmlEscape(portalUrl()) + "</td></tr>";
+  body += "</table>";
+  body += "</div></div>";
+  body += "<label class=\"small\" for=\"device-info-payload\">QR payload JSON fallback</label>";
+  body += "<textarea id=\"device-info-payload\" class=\"payload\" readonly>";
+  body += htmlEscape(deviceInfoJson);
+  body += "</textarea>";
+  body += "<p class=\"muted small\">This payload does not include Wi-Fi passwords or MQTT broker credentials.</p>";
+  body += "</div>";
+  body += "<script src=\"/qr-code.js\"></script>";
+  body += "<script>(function(){var payload=" + deviceInfoJson + ";var text=JSON.stringify(payload);var el=document.getElementById('device-qr');";
+  body += "try{var qr=qrcode(0,'M');qr.addData(text,'Byte');qr.make();el.innerHTML=qr.createSvgTag({cellSize:5,margin:12,scalable:true,alt:'Leafy device QR'});}";
+  body += "catch(e){el.innerHTML='<p class=\"warn small\">QR render failed. Use the JSON fallback below.</p>';}})();</script>";
   body += "<table><tr><th>Field</th><th>Value</th></tr>";
   body += "<tr><td>Device UID</td><td>" + htmlEscape(_config != nullptr ? _config->identity.deviceUid : "") + "</td></tr>";
   body += "<tr><td>Device Code</td><td>" + htmlEscape(_config != nullptr ? _config->identity.deviceCode : "") + "</td></tr>";
@@ -232,6 +326,26 @@ void SetupPortal::handleHome() {
   body += "</table>";
   body += "<p><a href=\"/wifi\">Configure Wi-Fi</a> or open <a href=\"/diagnostics\">diagnostics</a>.</p>";
   _server.send(200, "text/html", htmlPage("Leafy Device Setup", body));
+}
+
+void SetupPortal::handleDeviceInfo() {
+  _server.sendHeader("Cache-Control", "no-store");
+  _server.send(200, "application/json", buildDeviceInfoJson());
+}
+
+void SetupPortal::handleQrScript() {
+  _server.sendHeader("Cache-Control", "no-store");
+  _server.send(200, "application/javascript", LEAFY_QR_CODE_SCRIPT);
+}
+
+void SetupPortal::handleCaptivePortalProbe() {
+  redirectToPortal();
+}
+
+void SetupPortal::redirectToPortal() {
+  _server.sendHeader("Location", portalUrl() + "/", true);
+  _server.sendHeader("Cache-Control", "no-store");
+  _server.send(302, "text/plain", "Redirecting to Leafy setup portal...");
 }
 
 void SetupPortal::handleWifiForm() {
@@ -387,7 +501,13 @@ void SetupPortal::handleApiStatus() {
 }
 
 void SetupPortal::handleNotFound() {
-  _server.send(404, "text/html", htmlPage("Not Found", "<p class=\"warn\">Route not found.</p>"));
+  if (_server.uri().startsWith("/api/")) {
+    _server.sendHeader("Cache-Control", "no-store");
+    _server.send(404, "application/json", "{\"error\":\"not_found\"}");
+    return;
+  }
+
+  redirectToPortal();
 }
 
 }  // namespace leafy

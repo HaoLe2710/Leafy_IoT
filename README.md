@@ -210,6 +210,7 @@ Serial logs look like:
 [WARN] Required local setup is missing; Wi-Fi setup mode required
 [WARN] Entering Wi-Fi setup mode
 [INFO] Setup AP started: SSID=Leafy-Setup-YPE001, IP=192.168.4.1
+[INFO] Captive portal DNS started on 192.168.4.1:53
 [INFO] Setup portal started: http://192.168.4.1
 ```
 
@@ -217,13 +218,59 @@ Portal pages:
 
 | Route | Purpose |
 | --- | --- |
-| `GET /` | Device info: `deviceUid`, `deviceCode`, firmware, runtime state, Wi-Fi state, AP SSID, portal URL, MQTT state |
+| `GET /` | Device info plus a Leafy onboarding QR payload, text JSON fallback, runtime state, Wi-Fi state, AP SSID, portal URL, MQTT state |
+| `GET /device-info` | Versioned JSON identity payload for app/web onboarding QR scans |
+| `GET /qr-code.js` | Local offline QR renderer used by the setup portal |
+| `GET /generate_204`, `/gen_204` | Android captive portal probes; redirect to the setup portal |
+| `GET /hotspot-detect.html`, `/library/test/success.html` | Apple captive portal probes; redirect to the setup portal |
+| `GET /connecttest.txt`, `/ncsi.txt`, `/fwlink`, `/canonical.html` | Windows/browser captive portal probes; redirect to the setup portal |
 | `GET /wifi` | Wi-Fi SSID/password form |
 | `POST /wifi` | Validate and save Wi-Fi credentials, then reboot |
 | `GET /diagnostics` | Runtime config, calibration, Wi-Fi/MQTT state, heap, uptime, and current sensor readings |
 | `GET /reset` | Confirmation page for clearing runtime config |
 | `POST /reset` | Clear `leafy_runtime`, preserve `leafy_factory`, then reboot |
 | `GET /api/status` | Tiny JSON status endpoint for quick local checks |
+
+Captive portal auto-open:
+
+- In setup mode, the firmware starts a local DNS server on port `53`.
+- DNS wildcard `*` resolves captive-check hostnames to the setup AP IP.
+- Common Android, Apple, and Windows captive portal probe routes redirect to `http://192.168.4.1/`.
+- Unknown browser routes also redirect to the setup portal, so URLs such as `http://example.com` should land on the Leafy portal while connected to the setup AP.
+- Unknown `/api/*` routes return `{"error":"not_found"}` with HTTP `404` so API mistakes are still visible.
+- Auto-open is best-effort. Some operating systems cache captive state, require tapping a Wi-Fi sign-in notification, or are affected by VPN/mobile data settings.
+- Manual fallback remains `http://192.168.4.1`.
+
+Setup portal device QR:
+
+- The portal root renders a QR code titled `Connect this device to Leafy`.
+- The QR encodes the same compact JSON returned by `GET /device-info`.
+- The page also shows a read-only JSON textarea fallback for copy/paste if QR scanning is unavailable.
+- The QR is generated locally by `/qr-code.js`; it does not load scripts from the internet.
+
+`GET /device-info` response shape:
+
+```json
+{
+  "type": "LEAFY_IOT_DEVICE",
+  "version": 1,
+  "deviceUid": "leafy-prototype-001",
+  "deviceCode": "LEAFY-PROTO-001",
+  "deviceType": "ESP32",
+  "model": "Leafy IoT Module V1",
+  "firmwareVersion": "leafy-esp32-0.1.0",
+  "setupApSsid": "Leafy-Setup-YPE001",
+  "setupPortalUrl": "http://192.168.4.1"
+}
+```
+
+Mobile/web onboarding should scan this payload, read `deviceUid`, `deviceCode`, and `deviceType`, then ask the user to select a farm plot, zone, and display name before calling backend `POST /iot/devices/connect`.
+
+Security notes:
+
+- The QR and `/device-info` endpoint do not include `wifiPass`, `mqttUser`, `mqttPass`, `mqttHost`, or `mqttPort`.
+- Wi-Fi credentials remain local to `/wifi` and are saved only in the `leafy_runtime` namespace.
+- MQTT broker credentials remain factory/runtime internals and are not rendered in the setup portal QR payload.
 
 Wi-Fi save behavior:
 
