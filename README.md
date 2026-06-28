@@ -530,29 +530,7 @@ LDR range looks wrong:
 - Recalibrate in the actual enclosure and placement.
 - Do not treat `LIGHT_INTENSITY` as lux.
 
-## Focused Docs
 
-- [Hardware validation checklist](../docs/iot-device/iot-device-hardware-validation-checklist.md)
-- [Calibration guide](../docs/iot-device/iot-device-calibration-guide.md)
-- [Protocol v1](../docs/iot-device/iot-device-protocol-v1.md)
 
-## Known Limitations
 
-- Local setup portal v1 has no captive DNS and no rich UI.
-- Local setup portal v1 saves Wi-Fi credentials only; MQTT endpoint and calibration editing remain build/NVS tasks.
-- No durable telemetry queue exists yet.
-- Camera capture supports on-demand JPEG capture only; no periodic capture and no video.
-- File upload uses file-service multipart upload because file-service does not currently expose a device-safe presigned PUT creation endpoint.
-- DHT11 is low precision and slow.
-- YL-69 corrosion risk remains a hardware concern.
-- LDR output is normalized brightness, not true lux.
-- Production MQTT authentication is not solved by the current backend contract.
 
-## Next Phase
-
-Recommended next work:
-
-1. Add optional MQTT endpoint editing to the local setup portal.
-2. Add an NVS-backed calibration update path through the local setup portal.
-3. Add NTP setup if device-side timestamps are required.
-4. Add camera/image flow only after the backend media pipeline is defined.
